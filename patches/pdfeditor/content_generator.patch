@@ -372,6 +372,152 @@ index a513eb0..801cb1c 100644
  }
  
  TEST_F(FPDFEditEmbedderTest, SetText) {
+diff --git a/fpdfsdk/fpdf_ppo.cpp b/fpdfsdk/fpdf_ppo.cpp
+index ae1eb68..fe36d61 100644
+--- a/fpdfsdk/fpdf_ppo.cpp
++++ b/fpdfsdk/fpdf_ppo.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <memory>
+ #include <numeric>
++#include <set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -22,7 +23,10 @@
+ #include "core/fpdfapi/parser/cpdf_array.h"
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
+ #include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
+ #include "core/fpdfapi/parser/cpdf_object.h"
++#include "core/fpdfapi/parser/cpdf_reference.h"
++#include "core/fpdfapi/parser/cpdf_string.h"
+ #include "core/fpdfapi/parser/fpdf_parser_utility.h"
+ #include "core/fxcrt/check.h"
+ #include "core/fxcrt/retain_ptr.h"
+@@ -279,3 +283,86 @@ FPDF_CopyViewerPreferences(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc) {
+                     std::move(cloned_dict));
+   return true;
+ }
++
++FPDF_EXPORT int FPDF_CALLCONV FPDF_AddPageFieldsToForm(FPDF_DOCUMENT document,
++                                                       int start_index,
++                                                       int count) {
++  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
++  if (!doc || start_index < 0 || count < 0 ||
++      start_index + count > doc->GetPageCount()) {
++    return -1;
++  }
++  RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
++  if (!root) {
++    return -1;
++  }
++  RetainPtr<CPDF_Dictionary> form = root->GetMutableDictFor("AcroForm");
++  if (!form) {
++    form = doc->NewIndirect<CPDF_Dictionary>();
++    root->SetNewFor<CPDF_Reference>("AcroForm", doc, form->GetObjNum());
++  }
++  RetainPtr<CPDF_Array> fields = form->GetMutableArrayFor("Fields");
++  if (!fields) {
++    fields = form->SetNewFor<CPDF_Array>("Fields");
++  }
++  if (!form->KeyExist("DA")) {
++    form->SetNewFor<CPDF_String>("DA", "/Helv 0 Tf 0 g");
++  }
++
++  // Fields already in the form, and the names in use at the top level.
++  std::set<uint32_t> known;
++  std::set<WideString> names;
++  for (size_t i = 0; i < fields->size(); ++i) {
++    RetainPtr<const CPDF_Dictionary> field = fields->GetDictAt(i);
++    if (!field) {
++      continue;
++    }
++    known.insert(field->GetObjNum());
++    names.insert(field->GetUnicodeTextFor("T"));
++  }
++
++  int added = 0;
++  for (int page = start_index; page < start_index + count; ++page) {
++    RetainPtr<CPDF_Dictionary> page_dict = doc->GetMutablePageDictionary(page);
++    RetainPtr<CPDF_Array> annots =
++        page_dict ? page_dict->GetMutableArrayFor("Annots") : nullptr;
++    if (!annots) {
++      continue;
++    }
++    for (size_t i = 0; i < annots->size(); ++i) {
++      RetainPtr<CPDF_Dictionary> field = annots->GetMutableDictAt(i);
++      if (!field || field->GetNameFor("Subtype") != "Widget") {
++        continue;
++      }
++      // Walk up to the top-level field (bounded, in case of a /Parent cycle).
++      for (int depth = 0; depth < 32; ++depth) {
++        RetainPtr<CPDF_Dictionary> parent = field->GetMutableDictFor("Parent");
++        if (!parent) {
++          break;
++        }
++        field = std::move(parent);
++      }
++      const uint32_t obj_num = field->GetObjNum();
++      if (obj_num == 0 || known.count(obj_num)) {
++        continue;
++      }
++      WideString name = field->GetUnicodeTextFor("T");
++      if (!name.IsEmpty() && names.count(name)) {
++        WideString unique;
++        for (int n = 2;; ++n) {
++          unique = name + WideString::Format(L"_%d", n);
++          if (!names.count(unique)) {
++            break;
++          }
++        }
++        field->SetNewFor<CPDF_String>("T", unique.AsStringView());
++        name = unique;
++      }
++      fields->AppendNew<CPDF_Reference>(doc, obj_num);
++      known.insert(obj_num);
++      names.insert(name);
++      ++added;
++    }
++  }
++  return added;
++}
+diff --git a/fpdfsdk/fpdf_ppo_embeddertest.cpp b/fpdfsdk/fpdf_ppo_embeddertest.cpp
+index 1a0f60c..4645efb 100644
+--- a/fpdfsdk/fpdf_ppo_embeddertest.cpp
++++ b/fpdfsdk/fpdf_ppo_embeddertest.cpp
+@@ -777,3 +777,31 @@ TEST_F(FPDFPPOEmbedderTest, XFAMoveTest) {
+   EXPECT_EQ(GetPageChecksum(document(), 3), target_doc_checksums[0]);
+   EXPECT_EQ(GetPageChecksum(document(), 4), target_doc_checksums[4]);
+ }
++
++// PdfReader patch: FPDF_AddPageFieldsToForm().
++TEST_F(FPDFPPOEmbedderTest, AddPageFieldsToForm) {
++  ASSERT_TRUE(OpenDocument("text_form.pdf"));
++
++  ScopedFPDFDocument output(FPDF_CreateNewDocument());
++  ASSERT_TRUE(output);
++  // The same form page twice: neither copy is part of the new document's form.
++  ASSERT_TRUE(FPDF_ImportPages(output.get(), document(), nullptr, 0));
++  ASSERT_TRUE(FPDF_ImportPages(output.get(), document(), nullptr, 1));
++  ASSERT_EQ(2, FPDF_GetPageCount(output.get()));
++
++  EXPECT_EQ(-1, FPDF_AddPageFieldsToForm(output.get(), 1, 2));
++  EXPECT_EQ(1, FPDF_AddPageFieldsToForm(output.get(), 0, 1));
++  EXPECT_EQ(1, FPDF_AddPageFieldsToForm(output.get(), 1, 1));
++  // Already part of the form.
++  EXPECT_EQ(0, FPDF_AddPageFieldsToForm(output.get(), 0, 2));
++
++  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(output.get());
++  RetainPtr<const CPDF_Dictionary> form = doc->GetRoot()->GetDictFor("AcroForm");
++  ASSERT_TRUE(form);
++  RetainPtr<const CPDF_Array> fields = form->GetArrayFor("Fields");
++  ASSERT_TRUE(fields);
++  ASSERT_EQ(2u, fields->size());
++  // The second copy is renamed so that the two stay separate fields.
++  EXPECT_EQ(L"Text Box", fields->GetDictAt(0)->GetUnicodeTextFor("T"));
++  EXPECT_EQ(L"Text Box_2", fields->GetDictAt(1)->GetUnicodeTextFor("T"));
++}
 diff --git a/fpdfsdk/fpdf_save_embeddertest.cpp b/fpdfsdk/fpdf_save_embeddertest.cpp
 index d7e849a..78bf002 100644
 --- a/fpdfsdk/fpdf_save_embeddertest.cpp
@@ -394,3 +540,27 @@ index d7e849a..78bf002 100644
  
    // Verify the text is visible.
    VerifySavedDocumentWithExpectationSuffix(kSaveNewTextFilename);
+diff --git a/public/fpdf_ppo.h b/public/fpdf_ppo.h
+index c621d35..459c1cd 100644
+--- a/public/fpdf_ppo.h
++++ b/public/fpdf_ppo.h
+@@ -35,6 +35,19 @@ FPDF_ImportPagesByIndex(FPDF_DOCUMENT dest_doc,
+                         unsigned long length,
+                         int index);
+ 
++// PdfReader patch (not in upstream PDFium).
++// Adds the form fields whose widgets are on pages [start_index,
++// start_index + count) of |document| to the document's interactive form
++// (/AcroForm /Fields), creating the form if needed. Pages imported from another
++// document keep their widgets, but those are not part of the destination's
++// form until added. A top-level field whose name (/T) is already used gets a
++// suffix ("name_2", "name_3"...) so that it stays a separate field.
++//
++// Returns the number of top-level fields added, or -1 on error.
++FPDF_EXPORT int FPDF_CALLCONV FPDF_AddPageFieldsToForm(FPDF_DOCUMENT document,
++                                                       int start_index,
++                                                       int count);
++
+ // Import pages to a FPDF_DOCUMENT.
+ //
+ //   dest_doc  - The destination document for the pages.

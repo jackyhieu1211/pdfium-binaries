@@ -26,6 +26,9 @@ case "$BUILD_TYPE" in
 esac
 
 apply_patch "$PATCHES/public_headers.patch"
+# PdfReader: content stream writer fixes (Type3 fonts, colors, shadings,
+# Tc/Tw, subset fonts sharing a name, inline images)
+apply_patch "$PATCHES/pdfeditor/content_generator.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

@@ -1,0 +1,27 @@
+name: PdfEditor Android
+
+# Builds PDFium 157.0.8086 (chromium/8086) for Android arm64 and armv7 with the
+# patches in patches/pdfeditor. Artifacts: pdfium-android-arm64, pdfium-android-arm.
+on:
+  push:
+    branches: [pdfeditor-8086]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  android:
+    name: Android ${{ matrix.cpu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [arm64, arm]
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/build.yml
+    with:
+      branch: chromium/8086
+      version: 157.0.8086.0
+      target_os: android
+      target_cpu: ${{ matrix.cpu }}

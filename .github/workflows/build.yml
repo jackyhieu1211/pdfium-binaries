@@ -18,6 +18,11 @@ on:
         type: boolean
         required: false
         default: false
+      enable_xfa:
+        description: Enable XFA ("" = same as enable_v8)
+        type: string
+        required: false
+        default: ""
       is_debug:
         description: Is debug
         type: boolean
@@ -73,6 +78,7 @@ jobs:
       PDFium_TARGET_OS: ${{ inputs.target_os }}
       PDFium_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
       PDFium_ENABLE_V8: ${{ inputs.enable_v8 }}
+      PDFium_ENABLE_XFA: ${{ inputs.enable_xfa }}
       PDFium_BUILD_TYPE: ${{ inputs.build_type }}
       PDFium_VERSION: ${{ inputs.version }}
       EMSDK_VERSION: ${{ inputs.emsdk_version }}

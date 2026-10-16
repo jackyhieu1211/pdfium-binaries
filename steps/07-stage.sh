@@ -42,6 +42,11 @@ rm -f "$STAGING/include/PRESUBMIT.py"
 case "$OS-$BUILD_TYPE" in
   android-shared|linux-shared)
     mv "$BUILD/libpdfium.so" "$STAGING_LIB"
+    # PdfReader: unstripped copy for profiling (simpleperf symbols)
+    if [ -f "$BUILD/lib.unstripped/libpdfium.so" ]; then
+      mkdir -p "$STAGING/symbols"
+      cp "$BUILD/lib.unstripped/libpdfium.so" "$STAGING/symbols/"
+    fi
     ;;
 
   android-static|linux-static|mac-static|ios-static)

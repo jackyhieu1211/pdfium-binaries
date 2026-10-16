@@ -1,0 +1,34 @@
+diff --git a/fpdfsdk/cpdfsdk_widget.cpp b/fpdfsdk/cpdfsdk_widget.cpp
+index 6b92890..8e2d463 100644
+--- a/fpdfsdk/cpdfsdk_widget.cpp
++++ b/fpdfsdk/cpdfsdk_widget.cpp
+@@ -12,6 +12,7 @@
+ #include "constants/form_flags.h"
+ #include "core/fpdfapi/parser/cpdf_array.h"
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_number.h"
+ #include "core/fpdfapi/parser/cpdf_document.h"
+ #include "core/fpdfapi/parser/cpdf_reference.h"
+ #include "core/fpdfapi/parser/cpdf_stream.h"
+@@ -651,7 +652,20 @@ void CPDFSDK_Widget::ClearSelection() {
+ #endif  // PDF_ENABLE_XFA
+ }
+ 
+-void CPDFSDK_Widget::SetTopVisibleIndex(int index) {}
++void CPDFSDK_Widget::SetTopVisibleIndex(int index) {
++  // PdfReader patch: keep the list box scroll position (/TI) so its appearance
++  // shows the selected item. Without it the appearance is drawn from the old
++  // /TI and a newly selected item can be scrolled out of view.
++  CPDF_FormField* field = GetFormField();
++  if (!field || index < 0) {
++    return;
++  }
++  RetainPtr<const CPDF_Dictionary> dict = field->GetFieldDict();
++  if (!dict) {
++    return;
++  }
++  const_cast<CPDF_Dictionary*>(dict.Get())->SetNewFor<CPDF_Number>("TI", index);
++}
+ 
+ #ifdef PDF_ENABLE_XFA
+ void CPDFSDK_Widget::ResetXFAAppearance(ValueChanged bValueChanged) {

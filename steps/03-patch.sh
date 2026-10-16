@@ -32,6 +32,9 @@ apply_patch "$PATCHES/pdfeditor/content_generator.patch"
 # PdfReader: FPDF_Begin/EndContentGeneration (shared resources found once per
 # batch instead of once per page)
 apply_patch "$PATCHES/pdfeditor/batch_generation.patch"
+# PdfReader: CPDFSDK_Widget::SetTopVisibleIndex stores /TI (list box shows the
+# selected item)
+apply_patch "$PATCHES/pdfeditor/listbox_top_index.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

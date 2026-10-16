@@ -1,5 +1,5 @@
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
-index af1a439..3c22882 100644
+index af1a439..8d4ef35 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 @@ -41,6 +41,7 @@
@@ -10,7 +10,7 @@ index af1a439..3c22882 100644
  #include "core/fpdfapi/parser/fpdf_parser_utility.h"
  #include "core/fpdfapi/parser/object_tree_traversal_util.h"
  #include "core/fxcrt/check.h"
-@@ -205,6 +206,63 @@ void RemoveOrRestoreUnusedResources(
+@@ -205,6 +206,67 @@ void RemoveOrRestoreUnusedResources(
    }
  }
  
@@ -31,11 +31,15 @@ index af1a439..3c22882 100644
 +};
 +ContentGenerationBatch* g_batch = nullptr;
 +
-+std::set<uint32_t> SharedObjects(CPDF_Document* doc) {
++// The batch's set (no copy: it can hold every object of a long document), or
++// the set computed into `storage` outside a batch.
++const std::set<uint32_t>& SharedObjects(CPDF_Document* doc,
++                                        std::set<uint32_t>* storage) {
 +  if (g_batch && g_batch->doc.get() == doc) {
 +    return g_batch->shared_objects;
 +  }
-+  return GetObjectsWithMultipleReferences(doc);
++  *storage = GetObjectsWithMultipleReferences(doc);
++  return *storage;
 +}
 +
 +void CollectReferences(const CPDF_Object* object,
@@ -74,13 +78,14 @@ index af1a439..3c22882 100644
  bool IsPageResourceShared(CPDF_Document* doc,
                            RetainPtr<const CPDF_Dictionary> page_dict,
                            RetainPtr<const CPDF_Dictionary> resources_dict) {
-@@ -216,12 +274,19 @@ bool IsPageResourceShared(CPDF_Document* doc,
+@@ -216,12 +278,21 @@ bool IsPageResourceShared(CPDF_Document* doc,
    if (resources_object_number) {
      // If `resources_dict` is not an inline object, then check to see if is a
      // shared object.
 -    if (pdfium::Contains(GetObjectsWithMultipleReferences(doc),
--                         resources_object_number)) {
-+    if (pdfium::Contains(SharedObjects(doc), resources_object_number)) {
++    std::set<uint32_t> storage;
++    if (pdfium::Contains(SharedObjects(doc, &storage),
+                          resources_object_number)) {
        return true;
      }
    }
@@ -96,16 +101,17 @@ index af1a439..3c22882 100644
    // The check above may not catch all cases. e.g. inline objects. Check all
    // pages in the document to see if another page is using the same resources.
    int page_dict_seen = 0;
-@@ -286,7 +351,7 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
+@@ -286,7 +357,8 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
      return;
    }
  
 -  std::set<uint32_t> shared_objects = GetObjectsWithMultipleReferences(doc);
-+  std::set<uint32_t> shared_objects = SharedObjects(doc);
++  std::set<uint32_t> storage;
++  const std::set<uint32_t>& shared_objects = SharedObjects(doc, &storage);
    if (shared_objects.empty()) {
      return;
    }
-@@ -294,8 +359,10 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
+@@ -294,8 +366,10 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
    // Must modify `resources_dict` after `locker` goes out of scope.
    for (const auto& entry : entries_to_maybe_clone) {
      if (pdfium::Contains(shared_objects, entry.object->GetObjNum())) {
@@ -117,7 +123,7 @@ index af1a439..3c22882 100644
        resources_dict->SetNewFor<CPDF_Reference>(entry.key, doc,
                                                  clone_object_number);
      }
-@@ -316,6 +383,43 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
+@@ -316,6 +390,44 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
  
  CPDF_PageContentGenerator::~CPDF_PageContentGenerator() = default;
  
@@ -141,9 +147,10 @@ index af1a439..3c22882 100644
 +}
 +
 +// static
-+std::set<uint32_t> CPDF_PageContentGenerator::SharedObjectsInBatch(
++const std::set<uint32_t>* CPDF_PageContentGenerator::SharedObjectsInBatch(
 +    CPDF_Document* document) {
-+  return SharedObjects(document);
++  return g_batch && g_batch->doc.get() == document ? &g_batch->shared_objects
++                                                   : nullptr;
 +}
 +
 +// static
@@ -161,7 +168,7 @@ index af1a439..3c22882 100644
  void CPDF_PageContentGenerator::GenerateContent() {
    std::map<int32_t, fxcrt::ostringstream> new_stream_data =
        GenerateModifiedStreams();
-@@ -470,7 +574,13 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
+@@ -470,7 +582,13 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
  
    // Do not modify shared resource dictionaries. Give this page its own copy.
    if (IsPageResourceShared(document_, obj_holder_->GetDict(), resources)) {
@@ -176,7 +183,7 @@ index af1a439..3c22882 100644
          document_->AddIndirectObject(resources);
      obj_holder_->SetResources(resources);
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
-index ddad8dc..c36699a 100644
+index ddad8dc..3bd8f76 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
 @@ -10,6 +10,7 @@
@@ -187,7 +194,7 @@ index ddad8dc..c36699a 100644
  #include <vector>
  
  #include "core/fxcrt/bytestring.h"
-@@ -35,6 +36,15 @@ class CPDF_PageContentGenerator {
+@@ -35,6 +36,17 @@ class CPDF_PageContentGenerator {
    ~CPDF_PageContentGenerator();
  
    void GenerateContent();
@@ -195,14 +202,82 @@ index ddad8dc..c36699a 100644
 +  // PdfReader patch: see FPDF_BeginContentGeneration().
 +  static void BeginBatch(CPDF_Document* document);
 +  static void EndBatch();
-+  // Objects referenced more than once (computed once per batch).
-+  static std::set<uint32_t> SharedObjectsInBatch(CPDF_Document* document);
++  // Objects referenced more than once, computed once per batch (owned by the
++  // batch, valid until EndBatch()); null outside a batch.
++  static const std::set<uint32_t>* SharedObjectsInBatch(
++      CPDF_Document* document);
 +  // `clone` was just made: what it references gained a reference.
 +  static void NoteCloneInBatch(CPDF_Document* document,
 +                               const CPDF_Object* clone);
    bool ProcessPageObjects(fxcrt::ostringstream* buf);
  
   private:
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp b/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
+index 82d93a8..fa8aa8b 100644
+--- a/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
+@@ -19,6 +19,7 @@
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
+ #include "core/fpdfapi/parser/cpdf_document.h"
+ #include "core/fpdfapi/parser/cpdf_reference.h"
++#include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
+ #include "core/fpdfapi/parser/cpdf_stream.h"
+ #include "core/fpdfapi/parser/object_tree_traversal_util.h"
+ #include "core/fxcrt/check.h"
+@@ -31,7 +32,13 @@ CPDF_PageContentManager::CPDF_PageContentManager(
+     CPDF_Document* document)
+     : page_obj_holder_(page_obj_holder),
+       document_(document),
+-      objects_with_multi_refs_(GetObjectsWithMultipleReferences(document_)) {
++      objects_with_multi_refs_(
++          CPDF_PageContentGenerator::SharedObjectsInBatch(document_)) {
++  // PdfReader patch: share the batch's set instead of copying it per page.
++  if (!objects_with_multi_refs_) {
++    own_objects_with_multi_refs_ = GetObjectsWithMultipleReferences(document_);
++    objects_with_multi_refs_ = &own_objects_with_multi_refs_;
++  }
+   RetainPtr<CPDF_Dictionary> page_dict = page_obj_holder_->GetMutableDict();
+   RetainPtr<CPDF_Object> contents_obj =
+       page_dict->GetMutableObjectFor("Contents");
+@@ -52,10 +59,12 @@ CPDF_PageContentManager::CPDF_PageContentManager(
+ 
+     contents_array.Reset(indirect_obj->AsMutableArray());
+     if (contents_array) {
+-      if (pdfium::Contains(objects_with_multi_refs_,
++      if (pdfium::Contains(*objects_with_multi_refs_,
+                            contents_array->GetObjNum())) {
+         RetainPtr<CPDF_Array> cloned_contents_array =
+             pdfium::WrapRetain(contents_array->Clone()->AsMutableArray());
++        CPDF_PageContentGenerator::NoteCloneInBatch(document_,
++                                                    cloned_contents_array.Get());
+         page_dict->SetFor("Contents", cloned_contents_array);
+         contents_ = std::move(cloned_contents_array);
+       } else {
+@@ -143,7 +152,7 @@ void CPDF_PageContentManager::UpdateStream(size_t stream_index,
+ 
+   RetainPtr<CPDF_Stream> existing_stream = GetStreamByIndex(stream_index);
+   CHECK(existing_stream);
+-  if (!pdfium::Contains(objects_with_multi_refs_,
++  if (!pdfium::Contains(*objects_with_multi_refs_,
+                         existing_stream->GetObjNum())) {
+     existing_stream->SetDataFromStringstreamAndRemoveFilter(buf);
+     return;
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentmanager.h b/core/fpdfapi/edit/cpdf_pagecontentmanager.h
+index 1a6d94b..eeaa8e5 100644
+--- a/core/fpdfapi/edit/cpdf_pagecontentmanager.h
++++ b/core/fpdfapi/edit/cpdf_pagecontentmanager.h
+@@ -54,7 +54,10 @@ class CPDF_PageContentManager {
+ 
+   UnownedPtr<CPDF_PageObjectHolder> const page_obj_holder_;
+   UnownedPtr<CPDF_Document> const document_;
+-  const std::set<uint32_t> objects_with_multi_refs_;
++  // PdfReader patch: points into the content generation batch when one is
++  // active (no per-page copy), otherwise to own_objects_with_multi_refs_.
++  std::set<uint32_t> own_objects_with_multi_refs_;
++  const std::set<uint32_t>* objects_with_multi_refs_;
+   // When holding a CPDF_Stream, the pointer may be null.
+   std::variant<RetainPtr<CPDF_Stream>, RetainPtr<CPDF_Array>> contents_;
+   std::set<size_t> streams_to_remove_;
 diff --git a/fpdfsdk/fpdf_editpage.cpp b/fpdfsdk/fpdf_editpage.cpp
 index 0335720..72e88a4 100644
 --- a/fpdfsdk/fpdf_editpage.cpp
@@ -247,34 +322,3 @@ index 77fa19c..6ebe66e 100644
  // Destroy |page_object| by releasing its resources. |page_object| must have
  // been created by FPDFPageObj_CreateNew{Path|Rect}() or
  // FPDFPageObj_New{Text|Image}Obj(). This function must be called on
-diff --git a/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp b/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
-index 82d93a8..7fcab7c 100644
---- a/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
-+++ b/core/fpdfapi/edit/cpdf_pagecontentmanager.cpp
-@@ -19,6 +19,7 @@
- #include "core/fpdfapi/parser/cpdf_dictionary.h"
- #include "core/fpdfapi/parser/cpdf_document.h"
- #include "core/fpdfapi/parser/cpdf_reference.h"
-+#include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
- #include "core/fpdfapi/parser/cpdf_stream.h"
- #include "core/fpdfapi/parser/object_tree_traversal_util.h"
- #include "core/fxcrt/check.h"
-@@ -31,7 +32,8 @@ CPDF_PageContentManager::CPDF_PageContentManager(
-     CPDF_Document* document)
-     : page_obj_holder_(page_obj_holder),
-       document_(document),
--      objects_with_multi_refs_(GetObjectsWithMultipleReferences(document_)) {
-+      objects_with_multi_refs_(
-+          CPDF_PageContentGenerator::SharedObjectsInBatch(document_)) {
-   RetainPtr<CPDF_Dictionary> page_dict = page_obj_holder_->GetMutableDict();
-   RetainPtr<CPDF_Object> contents_obj =
-       page_dict->GetMutableObjectFor("Contents");
-@@ -56,6 +58,8 @@ CPDF_PageContentManager::CPDF_PageContentManager(
-                            contents_array->GetObjNum())) {
-         RetainPtr<CPDF_Array> cloned_contents_array =
-             pdfium::WrapRetain(contents_array->Clone()->AsMutableArray());
-+        CPDF_PageContentGenerator::NoteCloneInBatch(document_,
-+                                                    cloned_contents_array.Get());
-         page_dict->SetFor("Contents", cloned_contents_array);
-         contents_ = std::move(cloned_contents_array);
-       } else {

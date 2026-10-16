@@ -29,6 +29,9 @@ apply_patch "$PATCHES/public_headers.patch"
 # PdfReader: content stream writer fixes (Type3 fonts, colors, shadings,
 # Tc/Tw, subset fonts sharing a name, inline images)
 apply_patch "$PATCHES/pdfeditor/content_generator.patch"
+# PdfReader: FPDF_Begin/EndContentGeneration (shared resources found once per
+# batch instead of once per page)
+apply_patch "$PATCHES/pdfeditor/batch_generation.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

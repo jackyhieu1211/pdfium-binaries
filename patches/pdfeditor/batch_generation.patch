@@ -1,5 +1,5 @@
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
-index af1a439..6726b9f 100644
+index af1a439..f911c4a 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 @@ -41,6 +41,7 @@
@@ -28,7 +28,7 @@ index af1a439..6726b9f 100644
 +ContentGenerationBatch* g_batch = nullptr;
 +
 +std::set<uint32_t> SharedObjects(CPDF_Document* doc) {
-+  if (g_batch && g_batch->doc.Get() == doc) {
++  if (g_batch && g_batch->doc.get() == doc) {
 +    return g_batch->shared_objects;
 +  }
 +  return GetObjectsWithMultipleReferences(doc);
@@ -62,7 +62,7 @@ index af1a439..6726b9f 100644
 +// `clone` was just made from an object of `doc`: what it references now has
 +// one more reference.
 +void NoteClone(CPDF_Document* doc, const CPDF_Object* clone) {
-+  if (g_batch && g_batch->doc.Get() == doc) {
++  if (g_batch && g_batch->doc.get() == doc) {
 +    CollectReferences(clone, &g_batch->shared_objects, 0);
 +  }
 +}

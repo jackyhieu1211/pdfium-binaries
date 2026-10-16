@@ -1,5 +1,5 @@
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
-index af1a439..f911c4a 100644
+index af1a439..463322a 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 @@ -41,6 +41,7 @@
@@ -10,7 +10,7 @@ index af1a439..f911c4a 100644
  #include "core/fpdfapi/parser/fpdf_parser_utility.h"
  #include "core/fpdfapi/parser/object_tree_traversal_util.h"
  #include "core/fxcrt/check.h"
-@@ -205,6 +206,59 @@ void RemoveOrRestoreUnusedResources(
+@@ -205,6 +206,63 @@ void RemoveOrRestoreUnusedResources(
    }
  }
  
@@ -24,6 +24,10 @@ index af1a439..f911c4a 100644
 +struct ContentGenerationBatch {
 +  UnownedPtr<const CPDF_Document> doc;
 +  std::set<uint32_t> shared_objects;
++  // How many pages use each page dictionary / resources dictionary (the
++  // per-page loop in IsPageResourceShared() is O(pages) too).
++  std::map<const CPDF_Dictionary*, int> page_dict_uses;
++  std::map<const CPDF_Dictionary*, int> resources_uses;
 +};
 +ContentGenerationBatch* g_batch = nullptr;
 +
@@ -70,7 +74,7 @@ index af1a439..f911c4a 100644
  bool IsPageResourceShared(CPDF_Document* doc,
                            RetainPtr<const CPDF_Dictionary> page_dict,
                            RetainPtr<const CPDF_Dictionary> resources_dict) {
-@@ -216,8 +270,7 @@ bool IsPageResourceShared(CPDF_Document* doc,
+@@ -216,12 +274,19 @@ bool IsPageResourceShared(CPDF_Document* doc,
    if (resources_object_number) {
      // If `resources_dict` is not an inline object, then check to see if is a
      // shared object.
@@ -80,7 +84,19 @@ index af1a439..f911c4a 100644
        return true;
      }
    }
-@@ -286,7 +339,7 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
+ 
++  if (g_batch && g_batch->doc.get() == doc) {
++    auto page_uses = g_batch->page_dict_uses.find(page_dict.Get());
++    auto resource_uses = g_batch->resources_uses.find(resources_dict.Get());
++    return (page_uses != g_batch->page_dict_uses.end() && page_uses->second > 1) ||
++           (resource_uses != g_batch->resources_uses.end() &&
++            resource_uses->second > 1);
++  }
++
+   // The check above may not catch all cases. e.g. inline objects. Check all
+   // pages in the document to see if another page is using the same resources.
+   int page_dict_seen = 0;
+@@ -286,7 +351,7 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
      return;
    }
  
@@ -89,7 +105,7 @@ index af1a439..f911c4a 100644
    if (shared_objects.empty()) {
      return;
    }
-@@ -294,8 +347,10 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
+@@ -294,8 +359,10 @@ void CloneResourcesDictEntries(CPDF_Document* doc,
    // Must modify `resources_dict` after `locker` goes out of scope.
    for (const auto& entry : entries_to_maybe_clone) {
      if (pdfium::Contains(shared_objects, entry.object->GetObjNum())) {
@@ -101,7 +117,7 @@ index af1a439..f911c4a 100644
        resources_dict->SetNewFor<CPDF_Reference>(entry.key, doc,
                                                  clone_object_number);
      }
-@@ -316,6 +371,20 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
+@@ -316,6 +383,31 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
  
  CPDF_PageContentGenerator::~CPDF_PageContentGenerator() = default;
  
@@ -111,6 +127,17 @@ index af1a439..f911c4a 100644
 +  g_batch = new ContentGenerationBatch();
 +  g_batch->doc = document;
 +  g_batch->shared_objects = GetObjectsWithMultipleReferences(document);
++  for (int i = 0; i < document->GetPageCount(); ++i) {
++    RetainPtr<CPDF_Dictionary> page_dict = document->GetMutablePageDictionary(i);
++    if (!page_dict) {
++      continue;
++    }
++    g_batch->page_dict_uses[page_dict.Get()]++;
++    auto page = pdfium::MakeRetain<CPDF_Page>(document, std::move(page_dict));
++    if (RetainPtr<CPDF_Dictionary> resources = page->GetMutableResources()) {
++      g_batch->resources_uses[resources.Get()]++;
++    }
++  }
 +}
 +
 +// static
@@ -122,11 +149,17 @@ index af1a439..f911c4a 100644
  void CPDF_PageContentGenerator::GenerateContent() {
    std::map<int32_t, fxcrt::ostringstream> new_stream_data =
        GenerateModifiedStreams();
-@@ -471,6 +540,7 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
+@@ -470,7 +562,13 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
+ 
    // Do not modify shared resource dictionaries. Give this page its own copy.
    if (IsPageResourceShared(document_, obj_holder_->GetDict(), resources)) {
++    RetainPtr<const CPDF_Dictionary> shared = resources;
      resources = pdfium::WrapRetain(resources->Clone()->AsMutableDictionary());
 +    NoteClone(document_, resources.Get());
++    if (g_batch && g_batch->doc.get() == document_.get()) {
++      g_batch->resources_uses[shared.Get()]--;
++      g_batch->resources_uses[resources.Get()] = 1;
++    }
      const uint32_t clone_object_number =
          document_->AddIndirectObject(resources);
      obj_holder_->SetResources(resources);

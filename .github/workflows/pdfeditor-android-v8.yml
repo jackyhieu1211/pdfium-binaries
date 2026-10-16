@@ -1,0 +1,27 @@
+name: PdfEditor Android V8
+
+# Like pdfeditor-android.yml but with V8 (JavaScript in forms: AF* functions,
+# calculate / format / keystroke / validate events, app.alert) and XFA.
+# Artifacts: pdfium-v8-android-arm64, pdfium-v8-android-arm.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  android:
+    name: Android V8 ${{ matrix.cpu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [arm64, arm]
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/build.yml
+    with:
+      branch: chromium/8086
+      version: 157.0.8086.0
+      target_os: android
+      target_cpu: ${{ matrix.cpu }}
+      enable_v8: true

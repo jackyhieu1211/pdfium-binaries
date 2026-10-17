@@ -1,0 +1,187 @@
+diff --git a/fpdfsdk/fpdf_editpage.cpp b/fpdfsdk/fpdf_editpage.cpp
+index 72e88a4..4c2dcad 100644
+--- a/fpdfsdk/fpdf_editpage.cpp
++++ b/fpdfsdk/fpdf_editpage.cpp
+@@ -19,6 +19,7 @@
+ #include "core/fpdfapi/page/cpdf_form.h"
+ #include "core/fpdfapi/page/cpdf_formobject.h"
+ #include "core/fpdfapi/page/cpdf_imageobject.h"
++#include "core/fpdfapi/page/cpdf_occontext.h"
+ #include "core/fpdfapi/page/cpdf_page.h"
+ #include "core/fpdfapi/page/cpdf_pageimagecache.h"
+ #include "core/fpdfapi/page/cpdf_pageobject.h"
+@@ -29,7 +30,9 @@
+ #include "core/fpdfapi/parser/cpdf_array.h"
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
+ #include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
+ #include "core/fpdfapi/parser/cpdf_number.h"
++#include "core/fpdfapi/parser/cpdf_reference.h"
+ #include "core/fpdfapi/parser/cpdf_string.h"
+ #include "core/fpdfapi/render/cpdf_docrenderdata.h"
+ #include "core/fpdfapi/render/cpdf_renderoptions.h"
+@@ -1367,3 +1370,120 @@ FPDFFormObj_RemoveObject(FPDF_PAGEOBJECT form_object,
+   removed_object.release();
+   return true;
+ }
++
++namespace {
++
++// /OCGs of the catalog's /OCProperties.
++RetainPtr<CPDF_Array> LayerArray(CPDF_Document* doc) {
++  RetainPtr<CPDF_Dictionary> root = doc ? doc->GetMutableRoot() : nullptr;
++  RetainPtr<CPDF_Dictionary> props =
++      root ? root->GetMutableDictFor("OCProperties") : nullptr;
++  return props ? props->GetMutableArrayFor("OCGs") : nullptr;
++}
++
++RetainPtr<CPDF_Dictionary> LayerDict(CPDF_Document* doc, int index) {
++  RetainPtr<CPDF_Array> ocgs = LayerArray(doc);
++  if (!ocgs || index < 0 || static_cast<size_t>(index) >= ocgs->size()) {
++    return nullptr;
++  }
++  return ocgs->GetMutableDictAt(index);
++}
++
++// Removes every entry of |array| that refers to |dict|.
++void RemoveFromArray(CPDF_Array* array, const CPDF_Dictionary* dict) {
++  if (!array) {
++    return;
++  }
++  for (size_t i = array->size(); i > 0; --i) {
++    if (array->GetDirectObjectAt(i - 1) == dict) {
++      array->RemoveAt(i - 1);
++    }
++  }
++}
++
++}  // namespace
++
++FPDF_EXPORT int FPDF_CALLCONV FPDF_GetLayerCount(FPDF_DOCUMENT document) {
++  RetainPtr<CPDF_Array> ocgs =
++      LayerArray(CPDFDocumentFromFPDFDocument(document));
++  return ocgs ? fxcrt::CollectionSize<int>(*ocgs) : 0;
++}
++
++FPDF_EXPORT unsigned long FPDF_CALLCONV FPDF_GetLayerName(FPDF_DOCUMENT document,
++                                                         int index,
++                                                         FPDF_WCHAR* buffer,
++                                                         unsigned long buflen) {
++  RetainPtr<CPDF_Dictionary> dict =
++      LayerDict(CPDFDocumentFromFPDFDocument(document), index);
++  if (!dict) {
++    return 0;
++  }
++  // SAFETY: required from caller.
++  return Utf16EncodeMaybeCopyAndReturnLength(
++      dict->GetUnicodeTextFor("Name"),
++      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetLayerVisible(FPDF_DOCUMENT document,
++                                                        int index) {
++  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
++  RetainPtr<CPDF_Dictionary> dict = LayerDict(doc, index);
++  if (!dict) {
++    return false;
++  }
++  auto context =
++      pdfium::MakeRetain<CPDF_OCContext>(doc, CPDF_OCContext::kView);
++  return context->CheckOCGDictVisible(dict.Get());
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SetLayerVisible(FPDF_DOCUMENT document,
++                                                        int index,
++                                                        FPDF_BOOL visible) {
++  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
++  RetainPtr<CPDF_Dictionary> dict = LayerDict(doc, index);
++  if (!dict || !dict->GetObjNum()) {
++    return false;
++  }
++  RetainPtr<CPDF_Dictionary> props =
++      doc->GetMutableRoot()->GetMutableDictFor("OCProperties");
++  RetainPtr<CPDF_Dictionary> config = props->GetMutableDictFor("D");
++  if (!config) {
++    config = props->SetNewFor<CPDF_Dictionary>("D");
++  }
++  RetainPtr<CPDF_Array> on = config->GetMutableArrayFor("ON");
++  RetainPtr<CPDF_Array> off = config->GetMutableArrayFor("OFF");
++  RemoveFromArray(on.Get(), dict.Get());
++  RemoveFromArray(off.Get(), dict.Get());
++  // Explicit entry either way: overrides /BaseState
++  RetainPtr<CPDF_Array> target = visible ? on : off;
++  if (!target) {
++    target = config->SetNewFor<CPDF_Array>(visible ? "ON" : "OFF");
++  }
++  target->AppendNew<CPDF_Reference>(doc, dict->GetObjNum());
++  return true;
++}
++
++FPDF_EXPORT int FPDF_CALLCONV
++FPDFPageObj_CopyOptionalContent(FPDF_PAGEOBJECT dest, FPDF_PAGEOBJECT source) {
++  CPDF_PageObject* dest_obj = CPDFPageObjectFromFPDFPageObject(dest);
++  CPDF_PageObject* source_obj = CPDFPageObjectFromFPDFPageObject(source);
++  if (!dest_obj || !source_obj || dest_obj == source_obj) {
++    return 0;
++  }
++  const CPDF_ContentMarks* marks = source_obj->GetContentMarks();
++  CPDF_ContentMarks* dest_marks = dest_obj->GetContentMarks();
++  int copied = 0;
++  for (size_t i = 0; i < marks->CountItems(); ++i) {
++    const CPDF_ContentMarkItem* item = marks->GetItem(i);
++    if (item->GetName() != "OC" || dest_marks->ContainsItem(item)) {
++      continue;
++    }
++    dest_marks->AddExistingMark(
++        pdfium::WrapRetain(const_cast<CPDF_ContentMarkItem*>(item)));
++    ++copied;
++  }
++  if (copied) {
++    dest_obj->SetDirty(true);
++  }
++  return copied;
++}
+diff --git a/public/fpdf_edit.h b/public/fpdf_edit.h
+index 6ebe66e..2ceb6ca 100644
+--- a/public/fpdf_edit.h
++++ b/public/fpdf_edit.h
+@@ -269,6 +269,39 @@ FPDF_EXPORT void FPDF_CALLCONV
+ FPDF_BeginContentGeneration(FPDF_DOCUMENT document);
+ FPDF_EXPORT void FPDF_CALLCONV FPDF_EndContentGeneration();
+ 
++// PdfReader: optional content groups (layers).
++//
++// Number of optional content groups listed in /OCProperties /OCGs of
++// |document|, 0 if none.
++FPDF_EXPORT int FPDF_CALLCONV FPDF_GetLayerCount(FPDF_DOCUMENT document);
++
++// Name (/Name of the group) of layer |index|, as UTF-16LE with a terminating
++// NUL. Returns the number of bytes needed including the terminator; writes
++// |buffer| only when |buflen| is large enough. 0 on error.
++FPDF_EXPORT unsigned long FPDF_CALLCONV FPDF_GetLayerName(FPDF_DOCUMENT document,
++                                                         int index,
++                                                         FPDF_WCHAR* buffer,
++                                                         unsigned long buflen);
++
++// Whether layer |index| is shown when viewing (default configuration /D with
++// its /ON, /OFF and /BaseState).
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetLayerVisible(FPDF_DOCUMENT document,
++                                                        int index);
++
++// Shows or hides layer |index| when viewing: updates /ON and /OFF of the
++// default configuration /D (created if missing). Takes effect on the next
++// render and is written when the document is saved.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SetLayerVisible(FPDF_DOCUMENT document,
++                                                        int index,
++                                                        FPDF_BOOL visible);
++
++// Copies the optional content marks ("OC", referring to a layer through the
++// page's /Properties) of |source| onto |dest|, so |dest| is shown and hidden
++// with the same layer. Both objects must belong to the same page. Returns
++// the number of marks copied.
++FPDF_EXPORT int FPDF_CALLCONV
++FPDFPageObj_CopyOptionalContent(FPDF_PAGEOBJECT dest, FPDF_PAGEOBJECT source);
++
+ // Destroy |page_object| by releasing its resources. |page_object| must have
+ // been created by FPDFPageObj_CreateNew{Path|Rect}() or
+ // FPDFPageObj_New{Text|Image}Obj(). This function must be called on

@@ -35,6 +35,9 @@ apply_patch "$PATCHES/pdfeditor/batch_generation.patch"
 # PdfReader: CPDFSDK_Widget::SetTopVisibleIndex stores /TI (list box shows the
 # selected item)
 apply_patch "$PATCHES/pdfeditor/listbox_top_index.patch"
+# PdfReader: layers (optional content groups): list, show / hide, copy a
+# layer's marks onto new objects
+apply_patch "$PATCHES/pdfeditor/layers.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

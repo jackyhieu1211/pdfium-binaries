@@ -1,5 +1,5 @@
 diff --git a/fpdfsdk/fpdf_editpage.cpp b/fpdfsdk/fpdf_editpage.cpp
-index 72e88a4..4c2dcad 100644
+index 72e88a4..34727f2 100644
 --- a/fpdfsdk/fpdf_editpage.cpp
 +++ b/fpdfsdk/fpdf_editpage.cpp
 @@ -19,6 +19,7 @@
@@ -20,7 +20,7 @@ index 72e88a4..4c2dcad 100644
  #include "core/fpdfapi/parser/cpdf_string.h"
  #include "core/fpdfapi/render/cpdf_docrenderdata.h"
  #include "core/fpdfapi/render/cpdf_renderoptions.h"
-@@ -1367,3 +1370,120 @@ FPDFFormObj_RemoveObject(FPDF_PAGEOBJECT form_object,
+@@ -1367,3 +1370,224 @@ FPDFFormObj_RemoveObject(FPDF_PAGEOBJECT form_object,
    removed_object.release();
    return true;
  }
@@ -55,7 +55,111 @@ index 72e88a4..4c2dcad 100644
 +  }
 +}
 +
++// Default configuration /D of /OCProperties, or null.
++RetainPtr<const CPDF_Dictionary> LayerConfig(CPDF_Document* doc) {
++  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
++  RetainPtr<const CPDF_Dictionary> props =
++      root ? root->GetDictFor("OCProperties") : nullptr;
++  return props ? props->GetDictFor("D") : nullptr;
++}
++
++int LayerIndexOf(const CPDF_Array* ocgs, const CPDF_Object* dict) {
++  for (size_t i = 0; ocgs && i < ocgs->size(); ++i) {
++    if (ocgs->GetDirectObjectAt(i) == dict) {
++      return static_cast<int>(i);
++    }
++  }
++  return -1000;  // not a listed layer
++}
++
++// Walks /Order: layer indexes, -1 / -2 around nested arrays, labels as
++// -3 - n with their text collected in |labels|.
++void WalkOrder(const CPDF_Array* order,
++               const CPDF_Array* ocgs,
++               int depth,
++               std::vector<int>* tokens,
++               std::vector<WideString>* labels) {
++  if (!order || depth > 32) {
++    return;
++  }
++  for (size_t i = 0; i < order->size(); ++i) {
++    RetainPtr<const CPDF_Object> item = order->GetDirectObjectAt(i);
++    if (!item) {
++      continue;
++    }
++    if (const CPDF_Array* nested = item->AsArray()) {
++      tokens->push_back(-1);
++      WalkOrder(nested, ocgs, depth + 1, tokens, labels);
++      tokens->push_back(-2);
++    } else if (item->IsString()) {
++      // A label is only meaningful as the first entry of a nested array
++      if (i == 0 && depth > 0) {
++        tokens->push_back(-3 - static_cast<int>(labels->size()));
++        labels->push_back(item->GetUnicodeText());
++      }
++    } else if (item->IsDictionary()) {
++      const int index = LayerIndexOf(ocgs, item.Get());
++      if (index >= 0) {
++        tokens->push_back(index);
++      }
++    }
++  }
++}
++
++void LayerOrder(CPDF_Document* doc,
++                std::vector<int>* tokens,
++                std::vector<WideString>* labels) {
++  RetainPtr<const CPDF_Dictionary> config = LayerConfig(doc);
++  RetainPtr<CPDF_Array> ocgs = LayerArray(doc);
++  if (!config || !ocgs) {
++    return;
++  }
++  WalkOrder(config->GetArrayFor("Order").Get(), ocgs.Get(), 0, tokens, labels);
++}
++
 +}  // namespace
++
++FPDF_EXPORT int FPDF_CALLCONV FPDF_GetLayerOrder(FPDF_DOCUMENT document,
++                                                int* buffer,
++                                                int buflen) {
++  std::vector<int> tokens;
++  std::vector<WideString> labels;
++  LayerOrder(CPDFDocumentFromFPDFDocument(document), &tokens, &labels);
++  const int count = fxcrt::CollectionSize<int>(tokens);
++  if (buffer && buflen >= count) {
++    // SAFETY: required from caller.
++    UNSAFE_BUFFERS(std::copy(tokens.begin(), tokens.end(), buffer));
++  }
++  return count;
++}
++
++FPDF_EXPORT unsigned long FPDF_CALLCONV
++FPDF_GetLayerOrderLabel(FPDF_DOCUMENT document,
++                        int label,
++                        FPDF_WCHAR* buffer,
++                        unsigned long buflen) {
++  std::vector<int> tokens;
++  std::vector<WideString> labels;
++  LayerOrder(CPDFDocumentFromFPDFDocument(document), &tokens, &labels);
++  if (label < 0 || static_cast<size_t>(label) >= labels.size()) {
++    return 0;
++  }
++  // SAFETY: required from caller.
++  return Utf16EncodeMaybeCopyAndReturnLength(
++      labels[label], UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetLayerLocked(FPDF_DOCUMENT document,
++                                                       int index) {
++  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
++  RetainPtr<CPDF_Dictionary> dict = LayerDict(doc, index);
++  RetainPtr<const CPDF_Dictionary> config = LayerConfig(doc);
++  if (!dict || !config) {
++    return false;
++  }
++  RetainPtr<const CPDF_Array> locked = config->GetArrayFor("Locked");
++  return locked && locked->Contains(dict.Get());
++}
 +
 +FPDF_EXPORT int FPDF_CALLCONV FPDF_GetLayerCount(FPDF_DOCUMENT document) {
 +  RetainPtr<CPDF_Array> ocgs =
@@ -142,10 +246,10 @@ index 72e88a4..4c2dcad 100644
 +  return copied;
 +}
 diff --git a/public/fpdf_edit.h b/public/fpdf_edit.h
-index 6ebe66e..2ceb6ca 100644
+index 6ebe66e..4d83321 100644
 --- a/public/fpdf_edit.h
 +++ b/public/fpdf_edit.h
-@@ -269,6 +269,39 @@ FPDF_EXPORT void FPDF_CALLCONV
+@@ -269,6 +269,63 @@ FPDF_EXPORT void FPDF_CALLCONV
  FPDF_BeginContentGeneration(FPDF_DOCUMENT document);
  FPDF_EXPORT void FPDF_CALLCONV FPDF_EndContentGeneration();
  
@@ -174,6 +278,30 @@ index 6ebe66e..2ceb6ca 100644
 +FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SetLayerVisible(FPDF_DOCUMENT document,
 +                                                        int index,
 +                                                        FPDF_BOOL visible);
++
++// Layer tree for a layer panel: /Order of the default configuration /D,
++// flattened into tokens. Token >= 0: layer index (as for FPDF_GetLayerName);
++// -1: start of a nested list (children of the layer just before it, or a
++// labelled group); -2: end of the nested list; <= -3: label of the enclosing
++// group, label number = -3 - token (see FPDF_GetLayerOrderLabel). Writes the
++// tokens into |buffer| when |buflen| is large enough; returns the number of
++// tokens (0 when the file has no /Order).
++FPDF_EXPORT int FPDF_CALLCONV FPDF_GetLayerOrder(FPDF_DOCUMENT document,
++                                                int* buffer,
++                                                int buflen);
++
++// Text of group label |label| of the layer tree, as UTF-16LE with a
++// terminating NUL; returns the number of bytes needed, 0 on error.
++FPDF_EXPORT unsigned long FPDF_CALLCONV
++FPDF_GetLayerOrderLabel(FPDF_DOCUMENT document,
++                        int label,
++                        FPDF_WCHAR* buffer,
++                        unsigned long buflen);
++
++// Whether layer |index| is locked (/Locked of the default configuration):
++// viewers should not let the user show / hide it.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetLayerLocked(FPDF_DOCUMENT document,
++                                                       int index);
 +
 +// Copies the optional content marks ("OC", referring to a layer through the
 +// page's /Properties) of |source| onto |dest|, so |dest| is shown and hidden

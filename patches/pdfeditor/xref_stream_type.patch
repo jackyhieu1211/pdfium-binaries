@@ -1,0 +1,16 @@
+diff --git a/core/fpdfapi/edit/cpdf_creator.cpp b/core/fpdfapi/edit/cpdf_creator.cpp
+index 31e004f..367157b 100644
+--- a/core/fpdfapi/edit/cpdf_creator.cpp
++++ b/core/fpdfapi/edit/cpdf_creator.cpp
+@@ -462,8 +462,10 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+       return Stage::kInvalid;
+     }
+   } else {
++    // PdfReader: an xref stream must say /Type /XRef (other viewers reject
++    // the incremental update otherwise: Ghostscript, pypdf, Acrobat repair)
+     if (!archive_->WriteDWord(document_->GetLastObjNum() + 1) ||
+-        !archive_->WriteString(" 0 obj <<")) {
++        !archive_->WriteString(" 0 obj <</Type/XRef")) {
+       return Stage::kInvalid;
+     }
+   }

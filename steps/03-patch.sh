@@ -38,6 +38,8 @@ apply_patch "$PATCHES/pdfeditor/listbox_top_index.patch"
 # PdfReader: layers (optional content groups): list, show / hide, copy a
 # layer's marks onto new objects
 apply_patch "$PATCHES/pdfeditor/layers.patch"
+# PdfReader: incremental updates of xref stream files write /Type /XRef
+apply_patch "$PATCHES/pdfeditor/xref_stream_type.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

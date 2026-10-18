@@ -1,0 +1,70 @@
+diff --git a/fpdfsdk/fpdf_edittext.cpp b/fpdfsdk/fpdf_edittext.cpp
+index 9a45bbd..77b4550 100644
+--- a/fpdfsdk/fpdf_edittext.cpp
++++ b/fpdfsdk/fpdf_edittext.cpp
+@@ -894,3 +894,36 @@ FPDFGlyphPath_GetGlyphPathSegment(FPDF_GLYPHPATH glyphpath, int index) {
+ 
+   return FPDFPathSegmentFromFXPathPoint(&points[index]);
+ }
++
++FPDF_EXPORT int FPDF_CALLCONV FPDFTextObj_CountChars(FPDF_PAGEOBJECT text_object) {
++  CPDF_TextObject* text_obj = CPDFTextObjectFromFPDFPageObject(text_object);
++  return text_obj ? pdfium::checked_cast<int>(text_obj->CharCount()) : -1;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFTextObj_GetCharInfo(FPDF_PAGEOBJECT text_object,
++                                                           int index,
++                                                           uint32_t* charcode,
++                                                           float* x0,
++                                                           float* y0,
++                                                           float* x1,
++                                                           float* y1) {
++  CPDF_TextObject* text_obj = CPDFTextObjectFromFPDFPageObject(text_object);
++  if (!text_obj || index < 0 ||
++      static_cast<size_t>(index) >= text_obj->CharCount() || !charcode ||
++      !x0 || !y0 || !x1 || !y1) {
++    return false;
++  }
++  const CPDF_TextObject::Item item =
++      text_obj->GetCharInfo(static_cast<size_t>(index));
++  const CFX_Matrix matrix = text_obj->GetTextMatrix();
++  const CFX_PointF start = matrix.Transform(item.origin_);
++  const float width = text_obj->GetCharWidth(item.char_code_);
++  const CFX_PointF end =
++      matrix.Transform(CFX_PointF(item.origin_.x + width, item.origin_.y));
++  *charcode = item.char_code_;
++  *x0 = start.x;
++  *y0 = start.y;
++  *x1 = end.x;
++  *y1 = end.y;
++  return true;
++}
+diff --git a/public/fpdf_edit.h b/public/fpdf_edit.h
+index 4d83321..3c3863b 100644
+--- a/public/fpdf_edit.h
++++ b/public/fpdf_edit.h
+@@ -319,6 +319,24 @@ FPDF_GetLayerOrderLabel(FPDF_DOCUMENT document,
+ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetLayerLocked(FPDF_DOCUMENT document,
+                                                        int index);
+ 
++// PdfReader: characters of a text object, as stored (no re-encoding).
++//
++// Number of character codes in |text_object| (TJ spacing not counted), or -1.
++FPDF_EXPORT int FPDF_CALLCONV FPDFTextObj_CountChars(FPDF_PAGEOBJECT text_object);
++
++// Character |index| of |text_object|: its character code, and the start and
++// end of its advance along the baseline ((x0, y0) = origin, (x1, y1) = origin
++// plus the glyph width), in the object's coordinate space (the space of
++// FPDFPageObj_GetMatrix; for page objects, page coordinates). Use with
++// FPDFText_SetCharcodes to rebuild parts of a text object exactly.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFTextObj_GetCharInfo(FPDF_PAGEOBJECT text_object,
++                                                           int index,
++                                                           uint32_t* charcode,
++                                                           float* x0,
++                                                           float* y0,
++                                                           float* x1,
++                                                           float* y1);
++
+ // Copies the optional content marks ("OC", referring to a layer through the
+ // page's /Properties) of |source| onto |dest|, so |dest| is shown and hidden
+ // with the same layer. Both objects must belong to the same page. Returns

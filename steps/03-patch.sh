@@ -40,6 +40,8 @@ apply_patch "$PATCHES/pdfeditor/listbox_top_index.patch"
 apply_patch "$PATCHES/pdfeditor/layers.patch"
 # PdfReader: incremental updates of xref stream files write /Type /XRef
 apply_patch "$PATCHES/pdfeditor/xref_stream_type.patch"
+# PdfReader: character codes and positions of text objects (exact redaction)
+apply_patch "$PATCHES/pdfeditor/text_chars.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

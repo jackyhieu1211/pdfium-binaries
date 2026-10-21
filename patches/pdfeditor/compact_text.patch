@@ -1,5 +1,5 @@
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
-index 8d4ef35..7a25b39 100644
+index 8d4ef35..77aa800 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 @@ -501,6 +501,7 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
@@ -40,7 +40,7 @@ index 8d4ef35..7a25b39 100644
    if (CPDF_ImageObject* pImageObject = pPageObj->AsImage()) {
      ProcessImage(buf, pImageObject);
    } else if (CPDF_FormObject* pFormObj = pPageObj->AsForm()) {
-@@ -1141,13 +1151,43 @@ void CPDF_PageContentGenerator::ProcessShading(
+@@ -1141,15 +1151,58 @@ void CPDF_PageContentGenerator::ProcessShading(
  // Tf sets the font name (from Font in Resources) and font size.
  // Tr sets the text rendering mode.
  // TJ sets the actual text, <####...> is used when specifying charcodes.
@@ -79,15 +79,30 @@ index 8d4ef35..7a25b39 100644
 +    open.mode = -1;
 +    open.char_space = 0;
 +    open.word_space = 0;
++    open.line_matrix = CFX_Matrix();
 +  }
  
    const CFX_Matrix& matrix = pTextObj->GetTextMatrix();
 -  if (!matrix.IsIdentity()) {
-+  if (continuing || !matrix.IsIdentity()) {
++  const CFX_Matrix& line = open.line_matrix;
++  const float det = line.a * line.d - line.b * line.c;
++  if (continuing && matrix.a == line.a && matrix.b == line.b &&
++      matrix.c == line.c && matrix.d == line.d && det != 0) {
++    // e = e0 + tx * a + ty * c, f = f0 + tx * b + ty * d
++    const float de = matrix.e - line.e;
++    const float df = matrix.f - line.f;
++    const float tx = (de * line.d - df * line.c) / det;
++    const float ty = (df * line.a - de * line.b) / det;
++    WriteFloat(*buf, tx) << " ";
++    WriteFloat(*buf, ty) << " Td ";
++  } else if (continuing || !matrix.IsIdentity()) {
      WriteMatrix(*buf, matrix) << " Tm ";
    }
++  open.line_matrix = matrix;
  
-@@ -1170,8 +1210,7 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+   RetainPtr<CPDF_Font> font(pTextObj->GetFont());
+   if (!font) {
+@@ -1170,8 +1223,7 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
      data.type = "Type3";
    } else {
      // Balance the "q" and "BT" written above.
@@ -97,7 +112,7 @@ index 8d4ef35..7a25b39 100644
      return;
    }
    data.baseFont = font->GetBaseFontName();
-@@ -1204,17 +1243,27 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+@@ -1204,17 +1256,27 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
    }
    pTextObj->SetResourceName(dict_name);
  
@@ -131,7 +146,7 @@ index 8d4ef35..7a25b39 100644
    }
  
    *buf << "[";
-@@ -1231,6 +1280,8 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+@@ -1231,6 +1293,8 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
    if (!text.IsEmpty()) {
      *buf << PDF_HexEncodeString(text.AsStringView());
    }
@@ -143,7 +158,7 @@ index 8d4ef35..7a25b39 100644
 +  }
  }
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
-index 3bd8f76..d23fae3 100644
+index 3bd8f76..6701383 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
 @@ -60,6 +60,10 @@ class CPDF_PageContentGenerator {
@@ -157,7 +172,7 @@ index 3bd8f76..d23fae3 100644
    void ProcessShading(fxcrt::ostringstream* buf, CPDF_ShadingObject* pShadingObj);
    // Writes the color operators for `color` ("rg", "g", "k", or a pattern with
    // "cs" / "scn"; upper case when `stroke`). Returns false if nothing was
-@@ -100,6 +104,17 @@ class CPDF_PageContentGenerator {
+@@ -100,6 +104,21 @@ class CPDF_PageContentGenerator {
    UnownedPtr<CPDF_Document> const document_;
    std::vector<UnownedPtr<CPDF_PageObject>> page_objects_;
    ByteString default_graphics_name_;
@@ -170,6 +185,10 @@ index 3bd8f76..d23fae3 100644
 +    int mode = -1;
 +    float char_space = 0;
 +    float word_space = 0;
++    // Text line matrix of the block (set by the last Tm / Td): the next object
++    // with the same a, b, c, d moves by a short relative "Td" (compresses far
++    // better than repeating the whole matrix per glyph run).
++    CFX_Matrix line_matrix;
 +  };
 +  std::map<const fxcrt::ostringstream*, OpenText> open_text_;
  };

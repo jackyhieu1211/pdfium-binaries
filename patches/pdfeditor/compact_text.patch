@@ -1,0 +1,184 @@
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+index 8d4ef35..f5bf74a 100644
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+@@ -501,6 +501,7 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
+ 
+   // Finish dirty streams.
+   for (int32_t dirty_stream : all_dirty_streams) {
++    CloseText(&streams[dirty_stream]);
+     CFX_Matrix prev_ctm;
+     CFX_Matrix ctm;
+     bool affects_ctm;
+@@ -695,6 +696,11 @@ const CPDF_ContentMarks* CPDF_PageContentGenerator::ProcessContentMarks(
+     const CPDF_ContentMarks* pPrev) {
+   const CPDF_ContentMarks* pNext = pPageObj->GetContentMarks();
+   const size_t first_different = pPrev->FindFirstDifference(pNext);
++  // PdfReader patch: marked-content operators go outside text blocks.
++  if (first_different < pPrev->CountItems() ||
++      first_different < pNext->CountItems()) {
++    CloseText(buf);
++  }
+ 
+   // Close all marks that are in prev but not in next.
+   // Technically we should iterate backwards to close from the top to the
+@@ -743,6 +749,7 @@ const CPDF_ContentMarks* CPDF_PageContentGenerator::ProcessContentMarks(
+ void CPDF_PageContentGenerator::FinishMarks(
+     fxcrt::ostringstream* buf,
+     const CPDF_ContentMarks* pContentMarks) {
++  CloseText(buf);
+   // Technically we should iterate backwards to close from the top to the
+   // bottom, but since the EMC operators do not identify which mark they are
+   // closing, it does not matter.
+@@ -753,6 +760,9 @@ void CPDF_PageContentGenerator::FinishMarks(
+ 
+ void CPDF_PageContentGenerator::ProcessPageObject(fxcrt::ostringstream* buf,
+                                                   CPDF_PageObject* pPageObj) {
++  if (!pPageObj->AsText()) {
++    CloseText(buf);
++  }
+   if (CPDF_ImageObject* pImageObject = pPageObj->AsImage()) {
+     ProcessImage(buf, pImageObject);
+   } else if (CPDF_FormObject* pFormObj = pPageObj->AsForm()) {
+@@ -1141,13 +1151,42 @@ void CPDF_PageContentGenerator::ProcessShading(
+ // Tf sets the font name (from Font in Resources) and font size.
+ // Tr sets the text rendering mode.
+ // TJ sets the actual text, <####...> is used when specifying charcodes.
++void CPDF_PageContentGenerator::CloseText(fxcrt::ostringstream* buf) {
++  auto it = open_text_.find(buf);
++  if (it == open_text_.end() || !it->second.open) {
++    return;
++  }
++  *buf << "ET";
++  EndProcessGraphics(*buf);
++  it->second.open = false;
++}
++
+ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+                                             CPDF_TextObject* pTextObj) {
+-  ProcessGraphics(buf, pTextObj);
+-  *buf << "BT ";
++  // PdfReader patch: keep the block of the previous text object open when the
++  // graphics state is the same. Clipping render modes (4-7) clip at ET, so
++  // those objects get a block of their own.
++  fxcrt::ostringstream graphics;
++  ProcessGraphics(&graphics, pTextObj);
++  const std::string prefix = graphics.str();
++  const int render_mode = static_cast<int>(pTextObj->GetTextRenderMode());
++  const bool clips = render_mode >= 4;
++  OpenText& open = open_text_[buf];
++  const bool continuing = open.open && !clips && open.prefix == prefix;
++  if (!continuing) {
++    CloseText(buf);
++    *buf << prefix << "BT ";
++    open.open = true;
++    open.prefix = prefix;
++    open.font.clear();
++    open.size = 0;
++    open.mode = -1;
++    open.char_space = 0;
++    open.word_space = 0;
++  }
+ 
+   const CFX_Matrix& matrix = pTextObj->GetTextMatrix();
+-  if (!matrix.IsIdentity()) {
++  if (continuing || !matrix.IsIdentity()) {
+     WriteMatrix(*buf, matrix) << " Tm ";
+   }
+ 
+@@ -1170,8 +1209,7 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+     data.type = "Type3";
+   } else {
+     // Balance the "q" and "BT" written above.
+-    *buf << "ET";
+-    EndProcessGraphics(*buf);
++    CloseText(buf);
+     return;
+   }
+   data.baseFont = font->GetBaseFontName();
+@@ -1204,17 +1242,27 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+   }
+   pTextObj->SetResourceName(dict_name);
+ 
+-  *buf << "/" << PDF_NameEncode(dict_name) << " ";
+-  WriteFloat(*buf, pTextObj->GetFontSize()) << " Tf ";
+-  *buf << static_cast<int>(pTextObj->GetTextRenderMode()) << " Tr ";
+-  // Character and word spacing (in unscaled text space units).
++  if (open.font != dict_name || open.size != pTextObj->GetFontSize()) {
++    *buf << "/" << PDF_NameEncode(dict_name) << " ";
++    WriteFloat(*buf, pTextObj->GetFontSize()) << " Tf ";
++    open.font = dict_name;
++    open.size = pTextObj->GetFontSize();
++  }
++  if (open.mode != render_mode) {
++    *buf << render_mode << " Tr ";
++    open.mode = render_mode;
++  }
++  // Character and word spacing (in unscaled text space units). The block
++  // starts with 0 (default graphics state of the stream).
+   const float char_space = pTextObj->text_state().GetCharSpace();
+-  if (char_space != 0) {
++  if (char_space != open.char_space) {
+     WriteFloat(*buf, char_space) << " Tc ";
++    open.char_space = char_space;
+   }
+   const float word_space = pTextObj->text_state().GetWordSpace();
+-  if (word_space != 0) {
++  if (word_space != open.word_space) {
+     WriteFloat(*buf, word_space) << " Tw ";
++    open.word_space = word_space;
+   }
+ 
+   *buf << "[";
+@@ -1231,6 +1279,8 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+   if (!text.IsEmpty()) {
+     *buf << PDF_HexEncodeString(text.AsStringView());
+   }
+-  *buf << "] TJ ET";
+-  EndProcessGraphics(*buf);
++  *buf << "] TJ\n";
++  if (clips) {
++    CloseText(buf);
++  }
+ }
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
+index 3bd8f76..f45b1df 100644
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
+@@ -10,6 +10,7 @@
+ #include <stdint.h>
+ 
+ #include <map>
++#include <string>
+ #include <set>
+ #include <vector>
+ 
+@@ -60,6 +61,10 @@ class CPDF_PageContentGenerator {
+   void ProcessGraphics(fxcrt::ostringstream* buf, CPDF_PageObject* pPageObj);
+   void ProcessDefaultGraphics(fxcrt::ostringstream* buf);
+   void ProcessText(fxcrt::ostringstream* buf, CPDF_TextObject* pTextObj);
++  // PdfReader patch: consecutive text objects with the same graphics state
++  // share one "q ... BT ... ET Q" block (only Tm, and Tf / Tr / Tc / Tw when
++  // they change, per object). Closes the open block of `buf`, if any.
++  void CloseText(fxcrt::ostringstream* buf);
+   void ProcessShading(fxcrt::ostringstream* buf, CPDF_ShadingObject* pShadingObj);
+   // Writes the color operators for `color` ("rg", "g", "k", or a pattern with
+   // "cs" / "scn"; upper case when `stroke`). Returns false if nothing was
+@@ -100,6 +105,17 @@ class CPDF_PageContentGenerator {
+   UnownedPtr<CPDF_Document> const document_;
+   std::vector<UnownedPtr<CPDF_PageObject>> page_objects_;
+   ByteString default_graphics_name_;
++  // PdfReader patch: the text block left open in each output buffer.
++  struct OpenText {
++    bool open = false;
++    std::string prefix;  // graphics state written before BT ("q ...")
++    ByteString font;
++    float size = 0;
++    int mode = -1;
++    float char_space = 0;
++    float word_space = 0;
++  };
++  std::map<const fxcrt::ostringstream*, OpenText> open_text_;
+ };
+ 
+ #endif  // CORE_FPDFAPI_EDIT_CPDF_PAGECONTENTGENERATOR_H_

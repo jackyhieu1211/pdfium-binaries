@@ -158,10 +158,18 @@ index 8d4ef35..77aa800 100644
 +  }
  }
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
-index 3bd8f76..6701383 100644
+index 3bd8f76..a9066c3 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
-@@ -60,6 +60,10 @@ class CPDF_PageContentGenerator {
+@@ -13,6 +13,7 @@
+ #include <set>
+ #include <vector>
+ 
++#include "core/fxcrt/fx_coordinates.h"
+ #include "core/fxcrt/bytestring.h"
+ #include "core/fxcrt/fx_string_wrappers.h"
+ #include "core/fxcrt/unowned_ptr.h"
+@@ -60,6 +61,10 @@ class CPDF_PageContentGenerator {
    void ProcessGraphics(fxcrt::ostringstream* buf, CPDF_PageObject* pPageObj);
    void ProcessDefaultGraphics(fxcrt::ostringstream* buf);
    void ProcessText(fxcrt::ostringstream* buf, CPDF_TextObject* pTextObj);
@@ -172,7 +180,7 @@ index 3bd8f76..6701383 100644
    void ProcessShading(fxcrt::ostringstream* buf, CPDF_ShadingObject* pShadingObj);
    // Writes the color operators for `color` ("rg", "g", "k", or a pattern with
    // "cs" / "scn"; upper case when `stroke`). Returns false if nothing was
-@@ -100,6 +104,21 @@ class CPDF_PageContentGenerator {
+@@ -100,6 +105,21 @@ class CPDF_PageContentGenerator {
    UnownedPtr<CPDF_Document> const document_;
    std::vector<UnownedPtr<CPDF_PageObject>> page_objects_;
    ByteString default_graphics_name_;

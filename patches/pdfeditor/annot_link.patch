@@ -1,0 +1,90 @@
+--- a/fpdfsdk/fpdf_annot.cpp	2026-10-21 20:21:59
++++ b/fpdfsdk/fpdf_annot.cpp	2026-10-21 20:22:35
+@@ -6,6 +6,7 @@
+ 
+ #include <array>
+ #include <memory>
++#include <optional>
+ #include <sstream>
+ #include <utility>
+ #include <vector>
+@@ -1275,6 +1276,55 @@
+ 
+   // Caller takes ownership.
+   return FPDFAnnotationFromCPDFAnnotContext(pLinkedAnnot.release());
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
++                         FPDF_BYTESTRING key,
++                         FPDF_ANNOTATION linked) {
++  CPDF_AnnotContext* pAnnot = CPDFAnnotContextFromFPDFAnnotation(annot);
++  CPDF_AnnotContext* pLinked = CPDFAnnotContextFromFPDFAnnotation(linked);
++  if (!pAnnot || !pLinked || !key || !key[0]) {
++    return false;
++  }
++
++  RetainPtr<CPDF_Dictionary> pDict = pAnnot->GetMutableAnnotDict();
++  RetainPtr<CPDF_Dictionary> pLinkedDict = pLinked->GetMutableAnnotDict();
++  if (!pDict || !pLinkedDict || pDict == pLinkedDict) {
++    return false;
++  }
++
++  IPDF_Page* pPage = pLinked->GetPage();
++  CPDF_Page* pPDFPage = pPage ? pPage->AsPDFPage() : nullptr;
++  if (!pPDFPage) {
++    return false;
++  }
++
++  CPDF_Document* pDoc = pPDFPage->GetDocument();
++  if (pLinkedDict->GetObjNum() == 0) {
++    // Annotations added by FPDFPage_CreateAnnot() are direct objects in the
++    // page's /Annots array: make the linked one indirect so it can be
++    // referenced, and keep a reference to it in /Annots.
++    RetainPtr<CPDF_Array> pAnnots = pPDFPage->GetMutableAnnotsArray();
++    if (!pAnnots) {
++      return false;
++    }
++    std::optional<size_t> index;
++    for (size_t i = 0; i < pAnnots->size(); ++i) {
++      if (pAnnots->GetObjectAt(i).Get() == pLinkedDict.Get()) {
++        index = i;
++        break;
++      }
++    }
++    if (!index.has_value()) {
++      return false;
++    }
++    const uint32_t objnum = pDoc->AddIndirectObject(pLinkedDict);
++    pAnnots->SetNewAt<CPDF_Reference>(index.value(), pDoc, objnum);
++  }
++
++  pDict->SetNewFor<CPDF_Reference>(key, pDoc, pLinkedDict->GetObjNum());
++  return true;
+ }
+ 
+ FPDF_EXPORT int FPDF_CALLCONV FPDFAnnot_GetFlags(FPDF_ANNOTATION annot) {
+--- a/public/fpdf_annot.h	2026-10-21 20:22:00
++++ b/public/fpdf_annot.h	2026-10-21 20:22:35
+@@ -652,6 +652,21 @@
+ FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+ FPDFAnnot_GetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key);
+ 
++// Experimental API (PdfReader).
++// Link |annot|'s dictionary entry |key| (e.g. "IRT" for a reply, "Popup") to
++// the annotation |linked|. |linked| is made an indirect object if it is not
++// one yet (annotations added by FPDFPage_CreateAnnot()).
++//
++//   annot  - handle to an annotation.
++//   key    - the key of the dictionary entry, encoded in UTF-8.
++//   linked - handle to the annotation to link to.
++//
++// Returns true if successful.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
++                         FPDF_BYTESTRING key,
++                         FPDF_ANNOTATION linked);
++
+ // Experimental API.
+ // Get the annotation flags of |annot|.
+ //

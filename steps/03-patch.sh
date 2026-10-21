@@ -45,6 +45,8 @@ apply_patch "$PATCHES/pdfeditor/text_chars.patch"
 # PdfReader: consecutive text objects with the same graphics state share one
 # BT ... ET block when content is regenerated (rewritten pages stay small)
 apply_patch "$PATCHES/pdfeditor/compact_text.patch"
+# PdfReader: FPDFAnnot_SetLinkedAnnot (replies: /IRT to another annotation)
+apply_patch "$PATCHES/pdfeditor/annot_link.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"

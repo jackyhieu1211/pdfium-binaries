@@ -1,5 +1,5 @@
 diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
-index 8d4ef35..77aa800 100644
+index 8d4ef35..84a95d8 100644
 --- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 +++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
 @@ -501,6 +501,7 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
@@ -40,7 +40,7 @@ index 8d4ef35..77aa800 100644
    if (CPDF_ImageObject* pImageObject = pPageObj->AsImage()) {
      ProcessImage(buf, pImageObject);
    } else if (CPDF_FormObject* pFormObj = pPageObj->AsForm()) {
-@@ -1141,15 +1151,58 @@ void CPDF_PageContentGenerator::ProcessShading(
+@@ -1141,15 +1151,63 @@ void CPDF_PageContentGenerator::ProcessShading(
  // Tf sets the font name (from Font in Resources) and font size.
  // Tr sets the text rendering mode.
  // TJ sets the actual text, <####...> is used when specifying charcodes.
@@ -93,8 +93,13 @@ index 8d4ef35..77aa800 100644
 +    const float df = matrix.f - line.f;
 +    const float tx = (de * line.d - df * line.c) / det;
 +    const float ty = (df * line.a - de * line.b) / det;
-+    WriteFloat(*buf, tx) << " ";
-+    WriteFloat(*buf, ty) << " Td ";
++    if (ty == 0) {
++      WriteFloat(*buf, tx) << " 0 Td ";
++    } else {
++      // Only moves along the same baseline use Td: a vertical jump in one
++      // block (e.g. header to footer) made PDFium's text extraction drop text.
++      WriteMatrix(*buf, matrix) << " Tm ";
++    }
 +  } else if (continuing || !matrix.IsIdentity()) {
      WriteMatrix(*buf, matrix) << " Tm ";
    }
@@ -102,7 +107,7 @@ index 8d4ef35..77aa800 100644
  
    RetainPtr<CPDF_Font> font(pTextObj->GetFont());
    if (!font) {
-@@ -1170,8 +1223,7 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+@@ -1170,8 +1228,7 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
      data.type = "Type3";
    } else {
      // Balance the "q" and "BT" written above.
@@ -112,7 +117,7 @@ index 8d4ef35..77aa800 100644
      return;
    }
    data.baseFont = font->GetBaseFontName();
-@@ -1204,17 +1256,27 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+@@ -1204,17 +1261,27 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
    }
    pTextObj->SetResourceName(dict_name);
  
@@ -146,7 +151,7 @@ index 8d4ef35..77aa800 100644
    }
  
    *buf << "[";
-@@ -1231,6 +1293,8 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
+@@ -1231,6 +1298,8 @@ void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
    if (!text.IsEmpty()) {
      *buf << PDF_HexEncodeString(text.AsStringView());
    }

@@ -1,0 +1,27 @@
+diff -ru a/core/fpdfapi/parser/cpdf_syntax_parser.cpp b/core/fpdfapi/parser/cpdf_syntax_parser.cpp
+--- a/core/fpdfapi/parser/cpdf_syntax_parser.cpp
++++ b/core/fpdfapi/parser/cpdf_syntax_parser.cpp
+@@ -76,7 +76,7 @@
+ }  // namespace
+ 
+ // static
+-uint32_t CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
++thread_local uint32_t CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
+ 
+ // static
+ std::unique_ptr<CPDF_SyntaxParser> CPDF_SyntaxParser::CreateForTesting(
+diff -ru a/core/fpdfapi/parser/cpdf_syntax_parser.h b/core/fpdfapi/parser/cpdf_syntax_parser.h
+--- a/core/fpdfapi/parser/cpdf_syntax_parser.h
++++ b/core/fpdfapi/parser/cpdf_syntax_parser.h
+@@ -96,7 +96,10 @@
+   friend class CPDF_DataAvail;
+   friend class cpdf_syntax_parser_ReadHexString_Test;
+ 
+-  static uint32_t s_CurrentRecursionDepth;
++  // PdfReader patch: one counter per thread. A shared counter updated from two
++  // threads at once can stay above the limit for good, and then every document
++  // fails to parse (FPDF_ERR_FORMAT) until the process dies.
++  static thread_local uint32_t s_CurrentRecursionDepth;
+ 
+   bool ReadBlockAt(FX_FILESIZE read_pos);
+   bool GetCharAtBackward(FX_FILESIZE pos, uint8_t* ch);

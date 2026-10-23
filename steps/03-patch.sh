@@ -47,6 +47,9 @@ apply_patch "$PATCHES/pdfeditor/text_chars.patch"
 apply_patch "$PATCHES/pdfeditor/compact_text.patch"
 # PdfReader: FPDFAnnot_SetLinkedAnnot (replies: /IRT to another annotation)
 apply_patch "$PATCHES/pdfeditor/annot_link.patch"
+# PdfReader: parser recursion depth counter per thread (a shared counter raced
+# by two threads could block parsing of every document until restart)
+apply_patch "$PATCHES/pdfeditor/parser_depth_thread_local.patch"
 apply_patch "$PATCHES/clang_rt.patch" build
 
 [ "$ENABLE_V8" == "true" ] && apply_patch "$PATCHES/v8/pdfium.patch"
